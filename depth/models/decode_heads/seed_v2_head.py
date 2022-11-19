@@ -15,7 +15,7 @@ import numpy as np
 from depth.models.builder import build_loss
 
 from .plane_param_layers import local_planar_guidance, AO, reduction_1x1
-
+from joblib import Parallel, delayed
 class UpSample(nn.Sequential):
     '''Fusion module
 
@@ -223,7 +223,7 @@ class BinsFormerDecodeHead(DepthBaseDecodeHead):
         self.hook_identify_depth = torch.nn.Identity()
 
         ###########################V2###############################
-        self.seed_to_coe = reduction_1x1(self.embed_dims, 10)
+        self.seed_to_coe = reduction_1x1(512, 10)  #embeding_dim
     def init_weights(self):
         """Initialize weights of the Binsformer head."""
         for p in self.parameters():
@@ -258,7 +258,7 @@ class BinsFormerDecodeHead(DepthBaseDecodeHead):
             # mlvl_feats[2].shape = [2, 512, 13, 17]
             
 
-            # ÏÈ×öself_attention
+            # å…ˆåšself_attention
             batch_size = mlvl_feats[0].size(0)
             input_img_h, input_img_w = mlvl_feats[0].size(2), mlvl_feats[0].size(3)
             img_masks = mlvl_feats[0].new_zeros(
@@ -288,7 +288,7 @@ class BinsFormerDecodeHead(DepthBaseDecodeHead):
                 out.append(z.transpose(1, 2).view(bs, -1, mlvl_feats[i].size(2), mlvl_feats[i].size(3)))
 
             out = out[::-1]
-        #´Ë´¦µÄoutÊÇFPNÊä³öµÄ½á¹û??? Ó¦¸Ã²»ÊÇ£¬inputsÊÇEncoderµÄÊä³ö
+        #æ­¤å¤„çš„outæ˜¯FPNè¾“å‡ºçš„ç»“æœ??? åº”è¯¥ä¸æ˜¯ï¼Œinputsæ˜¯Encoderçš„è¾“å‡º
         
 
         # NOTE: pixel-wise decoder to obtain the hr feature map
@@ -399,20 +399,33 @@ class BinsFormerDecodeHead(DepthBaseDecodeHead):
                 bs, n, h, w = pred_logit.shape # bs, n_seeds, h, w
                 per_pixel_feat_m = per_pixel_feat.flatten(2) # 1, C, hw
                 classify = torch.matmul(item_seeds, per_pixel_feat_m).permute(0, 2, 1) # bs, hw, n_seeds
+                
+                
                 item_seeds = self.seed_to_coe(item_seeds)
                 
-                # ¿ªÊ¼¶Ôitem_seeds½øĞĞ²ğ·Ö£¬·Ö±ğ½øĞĞ´¦Àí£»
+                # å¼€å§‹å¯¹item_seedsè¿›è¡Œæ‹†åˆ†ï¼Œåˆ†åˆ«è¿›è¡Œå¤„ç†ï¼›
                 pqr_s = item_seeds.split([3, 1], 2)
-                pqr = pqr_s[0]
-                s = pqr_s[1]
-                pqr_o = torch.zeros(bs, h*w, 3).cuda()
+                pqr = pqr_s[0]  # bs X n_seeds X 3
+                s = pqr_s[1]    #s X n_seeds X 1
+                pqr_o = torch.zeros(bs, h*w, 3).cuda() # bs, hw, 3
                 
-                seed_index = torch.max(classify, 2)[1] # list.size = hw
-                i = 0
-                while i < h*w:
-                    pqr_o[1][i] = pqr[1][seed_index[1][i]]
-                    i += 1
+                seed_index = torch.max(classify, 2)[1] # list.size = hw  
+                # i = 0
+                # while i < h*w:
+                #     pqr_o[1][i] = pqr[1][seed_index[1][i]]
+                #     i += 1
+                if pqr.shape[0] == 1:
+                    def pqr_dist(i):
+                        pqr_o[0][i] = pqr[0][seed_index[0][i]]
+                else:
+                    def pqr_dist(i):
+                        for a in range(bs):
+                            pqr_o[a][i] = pqr[a][seed_index[a][i]]
                 
+                Parallel(n_jobs=2)(
+                    delayed(pqr_dist)(i) for i in range(h*w)) 
+                
+                 
                 pqr_o = pqr_o.view(bs, h, w, 3)
                 s_o = torch.matmul(classify, s).view(bs, h, w, 1)
                 #coef_feat = torch.matmul(classify, seeds_coe).view(bs, h, w, 4).permute(0, 3, 1, 2).contiguous() # bs, 4, h, w
@@ -420,20 +433,19 @@ class BinsFormerDecodeHead(DepthBaseDecodeHead):
                 ################################################
                 
                 ##########################################################################
-                # ÕâÀïpred_depthÓ¦¸ÃĞŞ¸Ä³ÉÓÉÆ½ÃæÏµÊı»Ø¹é³öÉî¶È
+                # è¿™é‡Œpred_depthåº”è¯¥ä¿®æ”¹æˆç”±å¹³é¢ç³»æ•°å›å½’å‡ºæ·±åº¦
                 # item_seeds Bs X 64 X 4
                 # pred_logit Bs X 64 X W X H 
                 # bs, n, coe_num = item_seeds.size()
 
-                # coef = Bs X W X H X 4
-                # coef = torch.matmul(pred_logit.permute(0,2,3,1), item_seeds.unsqueeze(1))
-                # µ÷³ÉBTSĞèÒªµÄÎ¬¶È
-                coef = coef.permute(0,3,2,1).contiguous() 
+                # coef = torch.matmul(pred_logit.permute(0,2,3,1), item_seeds.unsqueeze(1)) # Bs X W X H X 4
+                # è°ƒæˆBTSéœ€è¦çš„ç»´åº¦ï¼ˆV2ç‰ˆå·²ç»æ˜¯äº†ï¼Œä¸ç”¨è°ƒï¼‰
+                # coef = coef.permute(0,3,2,1).contiguous() 
                 disp = coe_to_depth(self.max_depth, coef)
                 # pred_depth.shape = Bs X 1 X H X W 
                 pred_depth = 1/disp
 
-                # µ÷»ØÈ¥ pred_depth.shape = Bs X 1 X W X H
+                # è°ƒå›å» pred_depth.shape = Bs X 1 X W X H
                 pred_depth = pred_depth.permute(0,1,3,2)
                 # pred_bins.append(bin_edges)
                 pred_classes.append(pred_class) 

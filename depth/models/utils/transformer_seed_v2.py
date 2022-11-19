@@ -1659,8 +1659,8 @@ class PixelTransformerDecoder(BaseModule):
         # outputs_mask : W X H X N  这个是N X C 的SeedQuery和F进行乘得到的结果
 
         # 这里再对N Seeds Embedding做一个CNN或者lpg e2 得到 N X 4的Seeds. (V2版本移到head中做了)
-        outputs_seeds = self.seed_to_coe(mask_embed) 
-        # outputs_seeds = mask_embed  # outputs_seeds N X C
+        # outputs_seeds = self.seed_to_coe(mask_embed) 
+        outputs_seeds = mask_embed  # outputs_seeds N X C
 
         
         # #################v2##############################################################
