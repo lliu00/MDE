@@ -254,7 +254,7 @@ class BinsFormerDecodeHead(DepthBaseDecodeHead):
             # mlvl_feats[2].shape = [2, 512, 13, 17]
             
 
-            # 先做self_attention
+            # 鍏堝仛self_attention
             batch_size = mlvl_feats[0].size(0)
             input_img_h, input_img_w = mlvl_feats[0].size(2), mlvl_feats[0].size(3)
             img_masks = mlvl_feats[0].new_zeros(
@@ -284,7 +284,7 @@ class BinsFormerDecodeHead(DepthBaseDecodeHead):
                 out.append(z.transpose(1, 2).view(bs, -1, mlvl_feats[i].size(2), mlvl_feats[i].size(3)))
 
             out = out[::-1]
-        #此处的out是FPN输出的结果??? 应该不是，inputs是Encoder的输出
+        #姝ゅ�勭殑out鏄疐PN杈撳嚭鐨勭粨鏋�??? 搴旇�ヤ笉鏄�锛宨nputs鏄疎ncoder鐨勮緭鍑�
         
 
         # NOTE: pixel-wise decoder to obtain the hr feature map
@@ -413,7 +413,7 @@ class BinsFormerDecodeHead(DepthBaseDecodeHead):
 
             pred_depths.append(pred_depth)
 
-        return pred_depths, pred_bins, pred_classes
+        return pred_depths, pred_bins, pred_classes, pred_logit, coef
 
     def forward_train(self, img, inputs, img_metas, depth_gt, train_cfg, class_label=None):
         losses = dict()
@@ -490,6 +490,6 @@ class BinsFormerDecodeHead(DepthBaseDecodeHead):
 
     def forward_test(self, inputs, img_metas, test_cfg):
 
-        pred_depths, pred_bins, pred_classes = self.forward(inputs)
+        pred_depths, pred_bins, pred_classes , logits, coef= self.forward(inputs)
 
-        return pred_depths[-1]
+        return pred_depths[-1], logits, coef

@@ -187,7 +187,7 @@ evaluation = dict(by_epoch=False,
 # iter runtime
 log_config = dict(
     _delete_=True,
-    interval=50,
+    interval=1,
     hooks=[
         dict(type='TextLoggerHook', by_epoch=False),
         dict(type='TensorboardLoggerHook') # TensorboardImageLoggerHook

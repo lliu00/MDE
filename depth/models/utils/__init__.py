@@ -10,7 +10,7 @@ from .shape_convert import nchw_to_nlc, nlc_to_nchw
 from .up_conv_block import UpConvBlock, BasicConvBlock
 from .logger import get_root_logger
 from .hooks import TensorboardImageLoggerHook
-from .transformer_seed import PixelTransformerDecoder, PixelTransformerDecoderLayer, PureMSDEnTransformer
+from .transformer_masked import PixelTransformerDecoder, PixelTransformerDecoderLayer, PureMSDEnTransformer
 
 __all__ = [
     'ResLayer', 'SelfAttentionBlock', 'make_divisible', 'InvertedResidual',

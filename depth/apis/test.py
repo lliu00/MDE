@@ -85,7 +85,7 @@ def single_gpu_test(model,
         result = [None]
 
         with torch.no_grad():
-            result_depth = model(return_loss=False, **data)
+            result_depth, logits, coe = model(return_loss=False, **data)
 
         if format_only:
             result = dataset.format_results(result_depth,
@@ -117,15 +117,26 @@ def single_gpu_test(model,
 
                 if out_dir:
                     mmcv.mkdir_or_exist(out_dir)
+                    mmcv.mkdir_or_exist("logits_" + out_dir)
+                    mmcv.mkdir_or_exist("coe_" + out_dir)
                     if format_only:
-                        filename = img_meta['ori_filename'][:-4]
-                        filename = filename + '.npy'
-                        out_file = osp.join(out_dir, filename)
+                        # filename = img_meta['ori_filename'][:-4]
+                        # filename = filename + '.npy'
+                        # out_file = osp.join(out_dir, filename)
+                        out_file = osp.join(out_dir, img_meta['ori_filename'])
+                        mmcv.mkdir_or_exist(osp.dirname(out_file))
                     else:
                         out_file = osp.join(out_dir, replace_str(img_meta['ori_filename']))
                 else:
                     out_file = None
 
+
+                logits = logits.cpu().numpy()
+                np.save("logits_"+ out_file + ".npy", logits)
+                
+                coe = coe.cpu().numpy()
+                np.save("coe_"+ out_file + ".npy", coe)
+                
                 model.module.show_result(
                     img_show,
                     result_depth,

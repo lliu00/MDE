@@ -414,13 +414,25 @@ class BinsFormerDecodeHead(DepthBaseDecodeHead):
                 # while i < h*w:
                 #     pqr_o[1][i] = pqr[1][seed_index[1][i]]
                 #     i += 1
-                if pqr.shape[0] == 1:
-                    def pqr_dist(i):
-                        pqr_o[0][i] = pqr[0][seed_index[0][i]]
+                
+                # if pqr.shape[0] == 1:
+                #     def pqr_dist(i):
+                #         pqr_o[0][i] = pqr[0][seed_index[0][i]]
+                # else:
+                #     def pqr_dist(i):
+                #         for a in range(bs):
+                #             pqr_o[a][i] = pqr[a][seed_index[a][i]]
+                if pqr.shape[0] != 1:
+                    def pqr_dist(i): 
+                        pqr_m = torch.cat(
+                            [pqr[0, seed_index[0, i]].unsqueeze(0).unsqueeze(1),
+                            pqr[1, seed_index[1, i]].unsqueeze(0).unsqueeze(1)],
+                            dim = 0
+                        )
+                        pqr_o[:, i] = pqr_m[:, 0]
                 else:
-                    def pqr_dist(i):
-                        for a in range(bs):
-                            pqr_o[a][i] = pqr[a][seed_index[a][i]]
+                    def pqr_dist(i):  
+                        pqr_o[0, i] = pqr[0, seed_index[0, i]]
                 
                 Parallel(n_jobs=2)(
                     delayed(pqr_dist)(i) for i in range(h*w)) 
