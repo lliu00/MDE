@@ -416,12 +416,12 @@ class DetrTransformerDecoderLayer(BaseTransformerLayer):
             in ffn. Default 0.0.
         operation_order (tuple[str]): The execution order of operation
             in transformer. Such as ('self_attn', 'norm', 'ffn', 'norm').
-            Default£ºNone
+            Defaultï¼šNone
         act_cfg (dict): The activation config for FFNs. Default: `LN`
         norm_cfg (dict): Config dict for normalization layer.
             Default: `LN`.
         ffn_num_fcs (int): The number of fully-connected layers in FFNs.
-            Default£º2.
+            Defaultï¼š2.
     """
 
     def __init__(self,
@@ -451,7 +451,7 @@ class DetrTransformerDecoderLayer(BaseTransformerLayer):
 class DetrTransformerEncoder(TransformerLayerSequence):
     """TransformerEncoder of DETR.
     Args:
-        post_norm_cfg (dict): Config of last normalization layer. Default£º
+        post_norm_cfg (dict): Config of last normalization layer. Defaultï¼š
             `LN`. Only used when `self.pre_norm` is `True`
     """
 
@@ -482,7 +482,7 @@ class DetrTransformerDecoder(TransformerLayerSequence):
     """Implements the decoder in DETR transformer.
     Args:
         return_intermediate (bool): Whether to return intermediate outputs.
-        post_norm_cfg (dict): Config of last normalization layer. Default£º
+        post_norm_cfg (dict): Config of last normalization layer. Defaultï¼š
             `LN`.
     """
 
@@ -611,7 +611,7 @@ class DeformableDetrTransformerDecoder(TransformerLayerSequence):
     """Implements the decoder in DETR transformer.
     Args:
         return_intermediate (bool): Whether to return intermediate outputs.
-        coder_norm_cfg (dict): Config of last normalization layer. Default£º
+        coder_norm_cfg (dict): Config of last normalization layer. Defaultï¼š
             `LN`.
     """
 
@@ -1320,7 +1320,7 @@ class PixelTransformerDecoderLayer(BaseModule):
         operation_order (tuple[str]): The execution order of operation
             in transformer. Such as ('self_attn', 'norm', 'ffn', 'norm').
             Support `prenorm` when you specifying first element as `norm`.
-            Default£ºNone.
+            Defaultï¼šNone.
         norm_cfg (dict): Config dict for normalization layer.
             Default: dict(type='LN').
         init_cfg (obj:`mmcv.ConfigDict`): The Config for initialization.
@@ -1493,7 +1493,7 @@ class PixelTransformerDecoderLayer(BaseModule):
                     identity if self.pre_norm else None,
                     query_pos=query_pos,
                     key_pos=query_pos,
-                    attn_mask=attn_masks[attn_index], # No att mask
+                    # attn_mask=attn_masks[attn_index], # No att mask
                     key_padding_mask=query_key_padding_mask,
                     **kwargs)
                 attn_index += 1
@@ -1544,7 +1544,7 @@ class PixelTransformerDecoder(BaseModule):
     """Implements the decoder in DETR transformer.
     Args:
         return_intermediate (bool): Whether to return intermediate outputs.
-        post_norm_cfg (dict): Config of last normalization layer. Default£º
+        post_norm_cfg (dict): Config of last normalization layer. Defaultï¼š
             `LN`.
     """
 
@@ -1590,6 +1590,7 @@ class PixelTransformerDecoder(BaseModule):
         # output FFNs
         self.bins_embed = nn.Linear(hidden_dim, 1)
         self.mask_embed = MLP(hidden_dim, hidden_dim, hidden_dim, 3)
+        self.real_mask_embed = MLP(hidden_dim, hidden_dim, hidden_dim, 3)  #attn_maskçš„MLP
 
         self.classify = classify
         if self.classify:
@@ -1632,12 +1633,13 @@ class PixelTransformerDecoder(BaseModule):
         predictions_bins = []
         predictions_mask = []
         predictions_class = []
-
+        predictions_bins_queries = []
+        
         # QxNxC query_embed, output
         query_embed = query_embed
         output = query_feat
         
-        
+        # mask_for_img, attn_mask = self.forward_mask_prediction(output, mask_features, attn_mask_target_size=size_list[0])
 
         for idx, layer in enumerate(self.layers):
             # // or %
@@ -1648,39 +1650,58 @@ class PixelTransformerDecoder(BaseModule):
                 level_index = idx // self.num_feature_levels
             else:
                 raise NotImplementedError
-            _, attn_mask = self.forward_mask_prediction(output, mask_features, attn_mask_target_size=size_list[(idx + 1) % self.num_feature_levels])
-            
-            output = layer(
-                output,
-                src[level_index],
-                src[level_index],
-                query_pos=query_embed,
-                key_pos=pos[level_index],
-                attn_masks=attn_mask,
-                query_key_padding_mask=None,
-                key_padding_mask=None,
-                **kwargs)
-
-            outputs_bins, outputs_mask, outputs_class = \
+            ###############################
+            if idx == 0:
+                output = layer(
+                    output,
+                    src[level_index],
+                    src[level_index],
+                    query_pos=query_embed,
+                    key_pos=pos[level_index],
+                    attn_masks=None,
+                    query_key_padding_mask=None,
+                    key_padding_mask=None,
+                    **kwargs)
+            else:
+                output = layer(
+                    output,
+                    src[level_index],
+                    src[level_index],
+                    query_pos=query_embed,
+                    key_pos=pos[level_index],
+                    attn_masks=None,
+                    query_key_padding_mask=None,
+                    key_padding_mask=None,
+                    **kwargs)
+                
+            outputs_bins, outputs_mask, outputs_class, bins_queries = \
                 self.forward_prediction_heads(
                     output,
                     mask_features)
 
+            ###############################
+            attn_mask = F.interpolate(outputs_mask, size=size_list[(idx + 1) % self.num_feature_levels], mode="bilinear", align_corners=False)
+            attn_mask = (attn_mask.sigmoid().flatten(2).unsqueeze(1).repeat(1, self.num_heads, 1, 1).flatten(0, 1) < 0.5).bool()
+            attn_mask = attn_mask.detach()
+            
             predictions_bins.append(outputs_bins)
             predictions_mask.append(outputs_mask)
             predictions_class.append(outputs_class)
+            predictions_bins_queries.append(bins_queries)
 
-        return predictions_bins, predictions_mask, predictions_class
+        return predictions_bins, predictions_mask, predictions_class, predictions_bins_queries
 
     def forward_mask_prediction(self, output, mask_features, attn_mask_target_size):
         decoder_output = self.decoder_norm(output)
         decoder_output = decoder_output.transpose(0, 1)
-        mask_embed = self.mask_embed(decoder_output)
+        mask_embed = self.real_mask_embed(decoder_output)
+        # mask_embed = self.mask_embed(decoder_output)
         outputs_mask = torch.einsum("bqc,bchw->bqhw", mask_embed, mask_features)
 
         # NOTE: prediction is of higher-resolution
         # [B, Q, H, W] -> [B, Q, H*W] -> [B, h, Q, H*W] -> [B*h, Q, HW]
         attn_mask = F.interpolate(outputs_mask, size=attn_mask_target_size, mode="bilinear", align_corners=False)
+
         # must use bool type
         # If a BoolTensor is provided, positions with ``True`` are not allowed to attend while ``False`` values will be unchanged.
         attn_mask = (attn_mask.sigmoid().flatten(2).unsqueeze(1).repeat(1, self.num_heads, 1, 1).flatten(0, 1) < 0.5).bool()
@@ -1706,4 +1727,4 @@ class PixelTransformerDecoder(BaseModule):
         outputs_mask = torch.einsum("bqc,bchw->bqhw", mask_embed, mask_features)
         outputs_mask = self.hook_identify(outputs_mask)
 
-        return outputs_bins, outputs_mask, outputs_class
+        return outputs_bins, outputs_mask, outputs_class, bins_queries

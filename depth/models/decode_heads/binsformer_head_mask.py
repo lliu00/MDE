@@ -28,7 +28,21 @@ class UpSample(nn.Sequential):
     def forward(self, x, concat_with):
         up_x = F.interpolate(x, size=[concat_with.size(2), concat_with.size(3)], mode='bilinear', align_corners=True)
         return self.convB(self.convA(torch.cat([up_x, concat_with], dim=1)))
+    
+class MLP(nn.Module):
+    """ Very simple multi-layer perceptron (also called FFN)"""
 
+    def __init__(self, input_dim, hidden_dim, output_dim, num_layers):
+        super().__init__()
+        self.num_layers = num_layers
+        h = [hidden_dim] * (num_layers - 1)
+        self.layers = nn.ModuleList(nn.Linear(n, k) for n, k in zip([input_dim] + h, h + [output_dim]))
+
+    def forward(self, x):
+        for i, layer in enumerate(self.layers):
+            x = F.relu(layer(x)) if i < self.num_layers - 1 else layer(x)
+        return x
+    
 @HEADS.register_module()
 class BinsFormerDecodeHead(DepthBaseDecodeHead):
     """BinsFormer head
@@ -168,6 +182,12 @@ class BinsFormerDecodeHead(DepthBaseDecodeHead):
         self.hook_identify_center = torch.nn.Identity()
         self.hook_identify_prob = torch.nn.Identity()
         self.hook_identify_depth = torch.nn.Identity()
+        
+        ###########################
+        self.loss_bins = build_loss(dict(type='CrossEntropyLoss', loss_weight=1))
+        self.loss_mask = build_loss(dict(type='CrossEntropyLoss', loss_weight=1))
+        # self.masked_feat_embed = nn.Linear(14144,1)
+        self.masked_feat_embed = MLP(14144,256,1,3)
 
     def init_weights(self):
         """Initialize weights of the Binsformer head."""
@@ -260,7 +280,9 @@ class BinsFormerDecodeHead(DepthBaseDecodeHead):
         pred_bins = []
         pred_depths = []
         pred_classes = []
-
+        
+        pred_mask_for_img = []
+        pred_bins_queries = []
         # deal with multi-scale feats
         mlvl_feats = multi_scale_features
 
@@ -293,14 +315,14 @@ class BinsFormerDecodeHead(DepthBaseDecodeHead):
         query_feat = self.query_feat.weight.unsqueeze(1).repeat(1, bs, 1) # N x B x C
         query_pe = self.query_embed.weight.unsqueeze(1).repeat(1, bs, 1) # N x B x C
 
-        predictions_bins, predictions_logits, predictions_class = \
+        predictions_bins, predictions_logits, predictions_class, predictions_bins_queries= \
              self.transformer_decoder(multi_scale_infos, query_feat, query_pe, per_pixel_feat)
 
         # NOTE: depth estimation module
         self.norm = 'softmax'
 
-        for item_bin, pred_logit, pred_class in \
-            zip(predictions_bins, predictions_logits, predictions_class):
+        for item_bin, pred_logit, pred_class, bins_queries in \
+            zip(predictions_bins, predictions_logits, predictions_class, predictions_bins_queries):
             
             if self.binsformer is False:
                 pred_depth = F.relu(self.pred_depth(pred_logit)) + self.min_depth
@@ -325,7 +347,8 @@ class BinsFormerDecodeHead(DepthBaseDecodeHead):
                 centers = 0.5 * (bin_edges[:, :-1] + bin_edges[:, 1:])
                 n, dout = centers.size()
                 centers = centers.contiguous().view(n, dout, 1, 1)
-
+                ##########
+                pred_mask_for_img.append(pred_logit)
                 pred_logit = pred_logit.softmax(dim=1)
                 pred_depth = torch.sum(pred_logit * centers, dim=1, keepdim=True)
 
@@ -334,15 +357,18 @@ class BinsFormerDecodeHead(DepthBaseDecodeHead):
             
                 pred_bins.append(bin_edges)
                 pred_classes.append(pred_class) 
-
+                ######
+                
+                pred_bins_queries.append(bins_queries)
+                
             pred_depths.append(pred_depth)
 
-        return pred_depths, pred_bins, pred_classes
+        return pred_depths, pred_bins, pred_classes, pred_mask_for_img, pred_bins_queries, per_pixel_feat
 
     def forward_train(self, img, inputs, img_metas, depth_gt, train_cfg, class_label=None):
         losses = dict()
 
-        pred_depths, pred_bins, pred_classes = self.forward(inputs)
+        pred_depths, pred_bins, pred_classes, pred_mask_for_img, pred_bins_queries, per_pixel_feat = self.forward(inputs)
 
         aux_weight_dict = {}
 
@@ -380,13 +406,13 @@ class BinsFormerDecodeHead(DepthBaseDecodeHead):
 
         # main loss
         depth = pred_depths[-1]
-        
         depth = resize(
             input=depth,
             size=depth_gt.shape[2:],
             mode='bilinear',
             align_corners=self.align_corners,
             warning=False)
+        
 
         if self.binsformer is False:
             depth_loss = self.loss_decode(depth, depth_gt)
@@ -406,7 +432,43 @@ class BinsFormerDecodeHead(DepthBaseDecodeHead):
                 losses["loss_chamfer"] = bins_loss
 
         losses["loss_depth"] = depth_loss
+        
+        
+        ####################
+        # logits_per_image = logit_scale * image_features @ text_features.t()
+        # logits_per_text = logits_per_image.t()
 
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+
+        mask = (pred_mask_for_img[-1].sigmoid() < 0.5).bool()
+        bs, n, h, w = mask.shape
+
+        masked_per_pixel_feat = []
+        bin_query = pred_bins_queries[-1]
+
+        for i in range(n):
+            _per_pixel_feat = per_pixel_feat.masked_fill(mask[:,i,:,:].unsqueeze(1),0)
+            _per_pixel_feat = _per_pixel_feat.flatten(2)
+            # _per_pixel_feat = self.masked_feat_embed(_per_pixel_feat)
+            masked_per_pixel_feat.append(_per_pixel_feat)
+        masked_per_pixel_feat = self.masked_feat_embed(torch.stack(masked_per_pixel_feat, dim=0)).squeeze(3).permute(1,2,0)
+        # logits_per_bins = pred_bins_queries[-1] @ masked_per_pixel_feat
+        # normalized features
+        # image_features = image_features / image_features.norm(dim=1, keepdim=True)
+        # text_features = text_features / text_features.norm(dim=1, keepdim=True)
+        bin_query = bin_query / bin_query.norm(dim = 2,keepdim = True)
+        masked_per_pixel_feat = masked_per_pixel_feat / masked_per_pixel_feat.norm(dim = 1,keepdim = True)
+        logits_per_bins = torch.matmul(bin_query, masked_per_pixel_feat)
+        logits_per_masked_feat = logits_per_bins.transpose(1,2)
+        ground_truth = torch.arange(n).to(device)
+        
+        loss_clip =0
+        for j in range(bs):
+            loss_clip += (self.loss_bins(logits_per_bins[j,:,:],ground_truth) + self.loss_mask(logits_per_masked_feat[j,:,:],ground_truth))/2
+        
+        loss_clip_dict = {"loss_clip":loss_clip}
+        losses.update(loss_clip_dict)
+        
         log_imgs = self.log_images(img[0], pred_depths[0], depth_gt[0], img_metas[0])
         losses.update(**log_imgs)
 
@@ -414,6 +476,9 @@ class BinsFormerDecodeHead(DepthBaseDecodeHead):
 
     def forward_test(self, inputs, img_metas, test_cfg):
 
-        pred_depths, pred_bins, pred_classes = self.forward(inputs)
+        pred_depths, pred_bins, pred_classes, pred_mask_for_img, pred_bins_queries,per_pixel_feat= self.forward(inputs)
 
         return pred_depths[-1]
+    
+    
+    

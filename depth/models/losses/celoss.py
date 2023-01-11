@@ -43,4 +43,4 @@ class CrossEntropyLoss(nn.Module):
         loss_ce = F.cross_entropy(input.squeeze(), target)
         acc = self.accuracy(input.squeeze(), target)
         loss_cls = self.loss_weight * loss_ce
-        return loss_cls, acc
+        return loss_cls

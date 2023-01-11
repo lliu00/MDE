@@ -27,7 +27,7 @@ model = dict(
         loss_decode=dict(type='SigLoss', valid_mask=True, loss_weight=10),
         with_loss_chamfer=False, # do not use chamfer loss
         loss_chamfer=dict(type='BinsChamferLoss', loss_weight=1e-1),
-        classify=True, # class embedding
+        classify=False, # class embedding
         loss_class=dict(type='CrossEntropyLoss', loss_weight=1e-2),
         norm_cfg=dict(type='BN', requires_grad=True),
         transformer_encoder=dict( # default settings

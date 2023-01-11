@@ -60,7 +60,7 @@ class DepthEncoderDecoder(BaseDepther):
         map of the same size as input."""
         
         x = self.extract_feat(img)
-        out = self._decode_head_forward_test(x, img_metas)
+        out, logits, coef = self._decode_head_forward_test(x, img_metas)
         # crop the pred depth to the certain range.
         out = torch.clamp(out, min=self.decode_head.min_depth, max=self.decode_head.max_depth)
         if rescale:
@@ -69,7 +69,22 @@ class DepthEncoderDecoder(BaseDepther):
                 size=img.shape[2:],
                 mode='bilinear',
                 align_corners=self.align_corners)
-        return out
+            
+        #------------------------------------------
+        coef = coef.permute(0,1,3,2)
+        logits = resize(
+                input=logits,
+                size=img.shape[2:],
+                mode='bilinear',
+                align_corners=self.align_corners)
+        #------------------------------------------
+        
+        coef = resize(
+                input=coef,
+                size=img.shape[2:],
+                mode='bilinear',
+                align_corners=self.align_corners)
+        return out, logits, coef
 
     def _decode_head_forward_train(self, img, x, img_metas, depth_gt, **kwargs):
         """Run forward function and calculate loss for decode head in
@@ -82,8 +97,8 @@ class DepthEncoderDecoder(BaseDepther):
     def _decode_head_forward_test(self, x, img_metas):
         """Run forward function and calculate loss for decode head in
         inference."""
-        depth_pred = self.decode_head.forward_test(x, img_metas, self.test_cfg)
-        return depth_pred
+        depth_pred , logits, coef= self.decode_head.forward_test(x, img_metas, self.test_cfg)
+        return depth_pred, logits, coef
 
     def forward_dummy(self, img):
         """Dummy forward function."""
@@ -122,9 +137,9 @@ class DepthEncoderDecoder(BaseDepther):
     def whole_inference(self, img, img_meta, rescale):
         """Inference with full image."""
 
-        depth_pred = self.encode_decode(img, img_meta, rescale)
+        depth_pred, logits, coef = self.encode_decode(img, img_meta, rescale)
 
-        return depth_pred
+        return depth_pred, logits, coef
 
     def inference(self, img, img_meta, rescale):
         """Inference with slide/whole style.
@@ -148,7 +163,7 @@ class DepthEncoderDecoder(BaseDepther):
         if self.test_cfg.mode == 'slide':
             raise NotImplementedError
         else:
-            depth_pred = self.whole_inference(img, img_meta, rescale)
+            depth_pred, logits, coef = self.whole_inference(img, img_meta, rescale)
         output = depth_pred
         flip = img_meta[0]['flip']
         if flip:
@@ -159,11 +174,11 @@ class DepthEncoderDecoder(BaseDepther):
             elif flip_direction == 'vertical':
                 output = output.flip(dims=(2, ))
 
-        return output
+        return output, logits, coef
 
     def simple_test(self, img, img_meta, rescale=True):
         """Simple test with single image."""
-        depth_pred = self.inference(img, img_meta, rescale)
+        depth_pred,logits,coef = self.inference(img, img_meta, rescale)
         if torch.onnx.is_in_onnx_export():
             # our inference backend only support 4D output
             depth_pred = depth_pred.unsqueeze(0)
@@ -171,7 +186,7 @@ class DepthEncoderDecoder(BaseDepther):
         depth_pred = depth_pred.cpu().numpy()
         # unravel batch dim
         depth_pred = list(depth_pred)
-        return depth_pred
+        return depth_pred, logits,coef
 
     def aug_test(self, imgs, img_metas, rescale=True):
         """Test with augmentations.
@@ -181,12 +196,12 @@ class DepthEncoderDecoder(BaseDepther):
         # aug_test rescale all imgs back to ori_shape for now
         assert rescale
         # to save memory, we get augmented depth logit inplace
-        depth_pred = self.inference(imgs[0], img_metas[0], rescale)
+        depth_pred,logits, coe = self.inference(imgs[0], img_metas[0], rescale)
         for i in range(1, len(imgs)):
-            cur_depth_pred = self.inference(imgs[i], img_metas[i], rescale)
+            cur_depth_pred,logits,coef = self.inference(imgs[i], img_metas[i], rescale)
             depth_pred += cur_depth_pred
         depth_pred /= len(imgs)
         depth_pred = depth_pred.cpu().numpy()
         # unravel batch dim
         depth_pred = list(depth_pred)
-        return depth_pred
+        return depth_pred, logits, coef
